@@ -1,6 +1,4 @@
--- Universal Silent Aim - Works on Arsenal, Da Hood, Rivals, and most shooters (except Flick)
--- Supports PC and Mobile
-
+-- Da Hood / Arsenal / Rivals Silent Aim (Mouse-based)
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
@@ -19,8 +17,7 @@ local Settings = {
 local FOVCircle = nil
 local CurrentTarget = nil
 local Highlights = {}
-local OriginalRaycast = nil
-local IsMobile = UserInputService.TouchEnabled
+local OriginalMousePos = nil
 
 local function createFOVCircle()
     if FOVCircle then FOVCircle:Destroy() end
@@ -31,22 +28,14 @@ local function createFOVCircle()
     circle.Color = Color3.fromRGB(255, 0, 0)
     circle.Filled = false
     circle.NumSides = 64
-    if IsMobile then
-        circle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    else
-        circle.Position = UserInputService:GetMouseLocation()
-    end
+    circle.Position = UserInputService:GetMouseLocation()
     return circle
 end
 
 local function updateFOVCircle()
     if FOVCircle then
         FOVCircle.Radius = Settings.FOV
-        if IsMobile then
-            FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        else
-            FOVCircle.Position = UserInputService:GetMouseLocation()
-        end
+        FOVCircle.Position = UserInputService:GetMouseLocation()
         FOVCircle.Visible = Settings.ShowFOV and Settings.Enabled
     end
 end
@@ -59,34 +48,6 @@ local function isTeammate(player)
         return localTeam == playerTeam
     end
     return false
-end
-
-local function getClosestPlayerToCenter()
-    local closest = nil
-    local shortestDist = Settings.FOV
-    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and not isTeammate(player) then
-            local character = player.Character
-            if character then
-                local humanoid = character:FindFirstChild("Humanoid")
-                local head = character:FindFirstChild("Head")
-                if humanoid and humanoid.Health > 0 and head then
-                    local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
-                    if onScreen then
-                        local screenVec = Vector2.new(screenPos.X, screenPos.Y)
-                        local dist = (screenVec - center).Magnitude
-                        if dist < shortestDist then
-                            shortestDist = dist
-                            closest = player
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return closest
 end
 
 local function getClosestPlayerToMouse()
@@ -117,24 +78,13 @@ local function getClosestPlayerToMouse()
     return closest
 end
 
-local function getClosestPlayer()
-    if IsMobile then
-        return getClosestPlayerToCenter()
-    else
-        return getClosestPlayerToMouse()
-    end
-end
-
-local function getTargetHitPart(targetPlayer)
+local function getTargetScreenPos(targetPlayer)
     if not targetPlayer or not targetPlayer.Character then return nil end
-    local parts = {"Head", "HumanoidRootPart", "UpperTorso", "Torso"}
-    for _, partName in ipairs(parts) do
-        local part = targetPlayer.Character:FindFirstChild(partName)
-        if part then
-            return part
-        end
-    end
-    return nil
+    local head = targetPlayer.Character:FindFirstChild("Head")
+    if not head then return nil end
+    local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
+    if not onScreen then return nil end
+    return Vector2.new(screenPos.X, screenPos.Y)
 end
 
 local function updateHighlight()
@@ -146,7 +96,6 @@ local function updateHighlight()
                 highlight.Parent = player.Character
                 highlight.FillColor = Color3.fromRGB(255, 0, 0)
                 highlight.FillTransparency = 0.5
-                highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
                 Highlights[player] = highlight
             end
             highlight.Enabled = Settings.Highlight and Settings.Enabled and CurrentTarget == player
@@ -154,29 +103,31 @@ local function updateHighlight()
     end
 end
 
-local function setupSilentAim()
-    if not OriginalRaycast then
-        OriginalRaycast = workspace.Raycast
-    end
+-- Silent Aim by intercepting mouse movements before they're processed
+local function setupMouseSilentAim()
+    local originalInputBegan = UserInputService.InputBegan
+    local originalInputChanged = UserInputService.InputChanged
     
-    workspace.Raycast = function(origin, direction, raycastParams, ...)
-        if Settings.Enabled and Settings.HitChance >= math.random(1, 100) then
-            local target = getClosestPlayer()
-            if target and target.Character then
-                local targetPart = getTargetHitPart(target)
-                if targetPart then
-                    local newDirection = (targetPart.Position - origin).Unit * direction.Magnitude
-                    return OriginalRaycast(workspace, origin, newDirection, raycastParams, ...)
+    -- Hook mouse button clicks (shooting)
+    UserInputService.InputBegan = function(input, gameProcessed)
+        if Settings.Enabled and input.UserInputType == Enum.UserInputType.MouseButton1 then
+            if Settings.HitChance >= math.random(1, 100) then
+                local target = getClosestPlayerToMouse()
+                if target and target.Character then
+                    local targetScreenPos = getTargetScreenPos(target)
+                    if targetScreenPos then
+                        -- Move mouse to target then shoot
+                        local originalPos = UserInputService:GetMouseLocation()
+                        mousemoveabs(targetScreenPos.X, targetScreenPos.Y)
+                        task.wait()
+                        local result = originalInputBegan(input, gameProcessed)
+                        mousemoveabs(originalPos.X, originalPos.Y)
+                        return result
+                    end
                 end
             end
         end
-        return OriginalRaycast(workspace, origin, direction, raycastParams, ...)
-    end
-end
-
-local function restoreRaycast()
-    if OriginalRaycast then
-        workspace.Raycast = OriginalRaycast
+        return originalInputBegan(input, gameProcessed)
     end
 end
 
@@ -186,29 +137,28 @@ local function onRender()
         return 
     end
     
-    if not IsMobile then
-        updateFOVCircle()
-    end
-    
-    CurrentTarget = getClosestPlayer()
+    updateFOVCircle()
+    CurrentTarget = getClosestPlayerToMouse()
     updateHighlight()
 end
 
--- Mobile touch support for FOV circle
-if IsMobile then
-    UserInputService.TouchMoved:Connect(function(touch, processed)
-        if not processed and Settings.ShowFOV and Settings.Enabled then
-            updateFOVCircle()
-        end
-    end)
-end
-
--- PC mouse movement support
-if not IsMobile then
-    UserInputService.InputChanged:Connect(function(input, gameProcessed)
-        if not gameProcessed and input.UserInputType == Enum.UserInputType.MouseMovement then
-            if Settings.ShowFOV and Settings.Enabled then
-                updateFOVCircle()
+-- Hook mouse movement for smooth aiming
+local mouseMoveConnection
+local function setupMouseMoveHook()
+    if mouseMoveConnection then mouseMoveConnection:Disconnect() end
+    
+    mouseMoveConnection = UserInputService.InputChanged:Connect(function(input, gameProcessed)
+        if not Settings.Enabled or gameProcessed then return end
+        
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            local target = getClosestPlayerToMouse()
+            if target and Settings.HitChance >= math.random(1, 100) then
+                local targetScreenPos = getTargetScreenPos(target)
+                if targetScreenPos then
+                    local center = UserInputService:GetMouseLocation()
+                    local newPos = center:Lerp(targetScreenPos, 0.3)
+                    mousemoveabs(newPos.X, newPos.Y)
+                end
             end
         end
     end)
@@ -226,9 +176,8 @@ function SilentAim.Toggle()
             if h then h.Enabled = false end
         end
         CurrentTarget = nil
-        restoreRaycast()
     else
-        setupSilentAim()
+        setupMouseMoveHook()
     end
 end
 
@@ -262,7 +211,6 @@ function SilentAim.SetHitChance(value)
     Settings.HitChance = math.clamp(value, 1, 100)
 end
 
--- Initialize
 FOVCircle = createFOVCircle()
 Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateFOVCircle)
 RunService.RenderStepped:Connect(onRender)
