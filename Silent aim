@@ -1,0 +1,270 @@
+-- Universal Silent Aim - Works on Arsenal, Da Hood, Rivals, and most shooters (except Flick)
+-- Supports PC and Mobile
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+
+local Settings = {
+    Enabled = false,
+    FOV = 300,
+    ShowFOV = false,
+    Highlight = false,
+    HitChance = 100,
+    TeamCheck = false
+}
+
+local FOVCircle = nil
+local CurrentTarget = nil
+local Highlights = {}
+local OriginalRaycast = nil
+local IsMobile = UserInputService.TouchEnabled
+
+local function createFOVCircle()
+    if FOVCircle then FOVCircle:Destroy() end
+    local circle = Drawing.new("Circle")
+    circle.Visible = false
+    circle.Radius = Settings.FOV
+    circle.Thickness = 1
+    circle.Color = Color3.fromRGB(255, 0, 0)
+    circle.Filled = false
+    circle.NumSides = 64
+    if IsMobile then
+        circle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    else
+        circle.Position = UserInputService:GetMouseLocation()
+    end
+    return circle
+end
+
+local function updateFOVCircle()
+    if FOVCircle then
+        FOVCircle.Radius = Settings.FOV
+        if IsMobile then
+            FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        else
+            FOVCircle.Position = UserInputService:GetMouseLocation()
+        end
+        FOVCircle.Visible = Settings.ShowFOV and Settings.Enabled
+    end
+end
+
+local function isTeammate(player)
+    if not Settings.TeamCheck then return false end
+    local localTeam = LocalPlayer.Team
+    local playerTeam = player.Team
+    if localTeam and playerTeam then
+        return localTeam == playerTeam
+    end
+    return false
+end
+
+local function getClosestPlayerToCenter()
+    local closest = nil
+    local shortestDist = Settings.FOV
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and not isTeammate(player) then
+            local character = player.Character
+            if character then
+                local humanoid = character:FindFirstChild("Humanoid")
+                local head = character:FindFirstChild("Head")
+                if humanoid and humanoid.Health > 0 and head then
+                    local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
+                    if onScreen then
+                        local screenVec = Vector2.new(screenPos.X, screenPos.Y)
+                        local dist = (screenVec - center).Magnitude
+                        if dist < shortestDist then
+                            shortestDist = dist
+                            closest = player
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local function getClosestPlayerToMouse()
+    local closest = nil
+    local shortestDist = Settings.FOV
+    local mousePos = UserInputService:GetMouseLocation()
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and not isTeammate(player) then
+            local character = player.Character
+            if character then
+                local humanoid = character:FindFirstChild("Humanoid")
+                local head = character:FindFirstChild("Head")
+                if humanoid and humanoid.Health > 0 and head then
+                    local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
+                    if onScreen then
+                        local screenVec = Vector2.new(screenPos.X, screenPos.Y)
+                        local dist = (screenVec - mousePos).Magnitude
+                        if dist < shortestDist then
+                            shortestDist = dist
+                            closest = player
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local function getClosestPlayer()
+    if IsMobile then
+        return getClosestPlayerToCenter()
+    else
+        return getClosestPlayerToMouse()
+    end
+end
+
+local function getTargetHitPart(targetPlayer)
+    if not targetPlayer or not targetPlayer.Character then return nil end
+    local parts = {"Head", "HumanoidRootPart", "UpperTorso", "Torso"}
+    for _, partName in ipairs(parts) do
+        local part = targetPlayer.Character:FindFirstChild(partName)
+        if part then
+            return part
+        end
+    end
+    return nil
+end
+
+local function updateHighlight()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local highlight = Highlights[player]
+            if not highlight then
+                highlight = Instance.new("Highlight")
+                highlight.Parent = player.Character
+                highlight.FillColor = Color3.fromRGB(255, 0, 0)
+                highlight.FillTransparency = 0.5
+                highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+                Highlights[player] = highlight
+            end
+            highlight.Enabled = Settings.Highlight and Settings.Enabled and CurrentTarget == player
+        end
+    end
+end
+
+local function setupSilentAim()
+    if not OriginalRaycast then
+        OriginalRaycast = workspace.Raycast
+    end
+    
+    workspace.Raycast = function(origin, direction, raycastParams, ...)
+        if Settings.Enabled and Settings.HitChance >= math.random(1, 100) then
+            local target = getClosestPlayer()
+            if target and target.Character then
+                local targetPart = getTargetHitPart(target)
+                if targetPart then
+                    local newDirection = (targetPart.Position - origin).Unit * direction.Magnitude
+                    return OriginalRaycast(workspace, origin, newDirection, raycastParams, ...)
+                end
+            end
+        end
+        return OriginalRaycast(workspace, origin, direction, raycastParams, ...)
+    end
+end
+
+local function restoreRaycast()
+    if OriginalRaycast then
+        workspace.Raycast = OriginalRaycast
+    end
+end
+
+local function onRender()
+    if not Settings.Enabled then 
+        CurrentTarget = nil
+        return 
+    end
+    
+    if not IsMobile then
+        updateFOVCircle()
+    end
+    
+    CurrentTarget = getClosestPlayer()
+    updateHighlight()
+end
+
+-- Mobile touch support for FOV circle
+if IsMobile then
+    UserInputService.TouchMoved:Connect(function(touch, processed)
+        if not processed and Settings.ShowFOV and Settings.Enabled then
+            updateFOVCircle()
+        end
+    end)
+end
+
+-- PC mouse movement support
+if not IsMobile then
+    UserInputService.InputChanged:Connect(function(input, gameProcessed)
+        if not gameProcessed and input.UserInputType == Enum.UserInputType.MouseMovement then
+            if Settings.ShowFOV and Settings.Enabled then
+                updateFOVCircle()
+            end
+        end
+    end)
+end
+
+local SilentAim = {}
+
+function SilentAim.Toggle()
+    Settings.Enabled = not Settings.Enabled
+    if FOVCircle then
+        FOVCircle.Visible = Settings.ShowFOV and Settings.Enabled
+    end
+    if not Settings.Enabled then
+        for _, h in pairs(Highlights) do 
+            if h then h.Enabled = false end
+        end
+        CurrentTarget = nil
+        restoreRaycast()
+    else
+        setupSilentAim()
+    end
+end
+
+function SilentAim.ToggleFOV()
+    Settings.ShowFOV = not Settings.ShowFOV
+    if FOVCircle then
+        FOVCircle.Visible = Settings.ShowFOV and Settings.Enabled
+    end
+    updateFOVCircle()
+end
+
+function SilentAim.ToggleHighlight()
+    Settings.Highlight = not Settings.Highlight
+    if not Settings.Highlight then
+        for _, h in pairs(Highlights) do 
+            if h then h.Enabled = false end
+        end
+    end
+end
+
+function SilentAim.ToggleTeamCheck()
+    Settings.TeamCheck = not Settings.TeamCheck
+end
+
+function SilentAim.SetFOV(value)
+    Settings.FOV = math.clamp(value, 1, 500)
+    updateFOVCircle()
+end
+
+function SilentAim.SetHitChance(value)
+    Settings.HitChance = math.clamp(value, 1, 100)
+end
+
+-- Initialize
+FOVCircle = createFOVCircle()
+Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateFOVCircle)
+RunService.RenderStepped:Connect(onRender)
+
+return SilentAim
